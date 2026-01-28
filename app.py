@@ -13,7 +13,7 @@ st.set_page_config(page_title="KREAM 代購報價系統", page_icon="👟", layo
 # --- 報價核心函式 ---
 async def get_kream_prices(model):
     async with async_playwright() as p:
-        # 啟動瀏覽器並模擬真人語系
+        # 啟動瀏覽器並模擬真人語系，避免被擋
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
         page = await context.new_page()
@@ -24,15 +24,15 @@ async def get_kream_prices(model):
             await page.goto(search_url, timeout=60000)
             
             # 點擊第一個商品結果
-            await page.wait_for_selector(".search_result_item", timeout=10000)
+            await page.wait_for_selector(".search_result_item", timeout=15000)
             await page.click(".search_result_item")
             
             # 點擊「購買」按鈕展開各尺寸清單
-            await page.wait_for_selector(".btn_division.buy", timeout=10000)
+            await page.wait_for_selector(".btn_division.buy", timeout=15000)
             await page.click(".btn_division.buy")
             
             # 等待價格清單載入
-            await page.wait_for_selector(".select_unit", timeout=10000)
+            await page.wait_for_selector(".select_unit", timeout=15000)
             items = await page.query_selector_all(".select_unit")
             
             data = []
@@ -71,11 +71,26 @@ async def get_kream_prices(model):
 # --- 網頁介面設計 ---
 st.title("👟 KREAM 代購即時報價系統")
 st.markdown("---")
-st.info("💡 目前計算公式：**(韓元 ÷ 205) × 1.03 × 4.55 × 1.1** (報價皆無條件進位至十位數)")
+st.info("💡 目前報價邏輯：**(韓元 ÷ 205) × 1.03 × 4.55 × 1.1** (無條件進位至十位)")
 
-model_input = st.text_input("請輸入商品型號 (例如: DD1391-100)", placeholder="請在此輸入...")
+model_input = st.text_input("請輸入商品型號 (例如: DD1391-100)", placeholder="請在此輸入型號...")
 
 if st.button("🔍 開始即時報價"):
     if model_input:
         with st.spinner(f'正在為您連線 KREAM 查詢 {model_input} ...'):
-            results = asyncio.run(get_k
+            # 這裡就是剛才報錯的地方，已經補好括號了
+            results = asyncio.run(get_kream_prices(model_input))
+            
+            if isinstance(results, list) and len(results) > 0:
+                st.success(f"✅ 查詢成功！以下為 {model_input} 的各尺寸報價：")
+                st.table(results)
+                st.caption("註：價格為即時抓取 KREAM 最低價計算，隨市場波動調整。")
+            elif isinstance(results, list) and len(results) == 0:
+                st.warning("找不到該型號的尺寸價格資訊，請確認型號是否正確。")
+            else:
+                st.error(results)
+    else:
+        st.warning("⚠️ 請先輸入商品型號！")
+
+st.markdown("---")
+st.caption("專屬代購報價系統 v1.1 | 修正語法錯誤")
