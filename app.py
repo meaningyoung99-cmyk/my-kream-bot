@@ -2,37 +2,62 @@ import streamlit as st
 import asyncio
 import os
 import math
+import random
 from playwright.async_api import async_playwright
 
-# 1. 自動安裝瀏覽器核心 (Streamlit 雲端運行必需)
+# 1. 自動安裝瀏覽器核心
 os.system("playwright install chromium")
 
-# 2. 設定網頁標題與樣式
+# 2. 設定網頁標題
 st.set_page_config(page_title="KREAM 代購報價系統", page_icon="👟", layout="centered")
 
-# --- 報價核心函式 ---
 async def get_kream_prices(model):
     async with async_playwright() as p:
-        # 啟動瀏覽器並模擬真人語系，避免被擋
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
+        # 啟動瀏覽器，加入更多偽裝參數
+        browser = await p.chromium.launch(headless=True, args=[
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled'
+        ])
+        
+        # 隨機偽裝瀏覽器指紋
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+        ]
+        
+        context = await browser.new_context(
+            user_agent=random.choice(user_agents),
+            viewport={'width': 1280, 'height': 800}
+        )
         page = await context.new_page()
         
         try:
             # 前往 KREAM 搜尋頁
             search_url = f"https://kream.co.kr/search?keyword={model}&tab=products"
-            await page.goto(search_url, timeout=60000)
+            # 等待頁面完全加載
+            await page.goto(search_url, wait_until="networkidle", timeout=60000)
             
-            # 點擊第一個商品結果
-            await page.wait_for_selector(".search_result_item", timeout=15000)
-            await page.click(".search_result_item")
+            # 增加隨機延遲，模擬真人思考
+            await asyncio.sleep(random.uniform(2, 4))
             
-            # 點擊「購買」按鈕展開各尺寸清單
-            await page.wait_for_selector(".btn_division.buy", timeout=15000)
-            await page.click(".btn_division.buy")
+            # 檢查是否被擋 (出現驗證碼或空白)
+            if "captcha" in page.url or await page.query_selector(".captcha") is not None:
+                return "❌ 被 KREAM 偵測為機器人了，請過幾分鐘再試。"
+
+            # 等待第一個商品結果 (延長到 30 秒)
+            item_selector = ".search_result_item"
+            await page.wait_for_selector(item_selector, timeout=30000)
+            await page.click(item_selector)
+            
+            # 等待購買按鈕並點擊
+            buy_btn = ".btn_division.buy"
+            await page.wait_for_selector(buy_btn, timeout=20000)
+            await page.click(buy_btn)
             
             # 等待價格清單載入
-            await page.wait_for_selector(".select_unit", timeout=15000)
+            await page.wait_for_selector(".select_unit", timeout=20000)
             items = await page.query_selector_all(".select_unit")
             
             data = []
@@ -45,14 +70,9 @@ async def get_kream_prices(model):
                     p_text = await price_el.inner_text()
                     
                     if "원" in p_text:
-                        # 取得韓元純數字
                         krw = int(p_text.replace(",", "").replace("원", "").strip())
-                        
-                        # --- 套用你的專屬公式 ---
-                        # 公式: (韓元 / 205) * 1.03 * 4.55 * 1.1
+                        # 公式: (韓元 / 205) * 1.03 * 4.55 * 1.1，無條件進位到十位
                         raw_twd = (krw / 205) * 1.03 * 4.55 * 1.1
-                        
-                        # 無條件進位到十位數 (例如 4512 -> 4520)
                         twd = math.ceil(raw_twd / 10) * 10
                         
                         data.append({
@@ -64,33 +84,31 @@ async def get_kream_prices(model):
             return data
             
         except Exception as e:
-            return f"查詢失敗，原因：{str(e)}"
+            # 如果還是超時，給一個具體的提示
+            if "Timeout" in str(e):
+                return "⚠️ KREAM 響應太慢或暫時封鎖了查詢，請重新嘗試或稍後再試。"
+            return f"❌ 查詢出錯：{str(e)}"
         finally:
             await browser.close()
 
-# --- 網頁介面設計 ---
+# --- 介面 ---
 st.title("👟 KREAM 代購即時報價系統")
 st.markdown("---")
-st.info("💡 目前報價邏輯：**(韓元 ÷ 205) × 1.03 × 4.55 × 1.1** (無條件進位至十位)")
+st.info("💡 公式：**(韓元 ÷ 205) × 1.03 × 4.55 × 1.1** (進位至十位)")
 
-model_input = st.text_input("請輸入商品型號 (例如: DD1391-100)", placeholder="請在此輸入型號...")
+model_input = st.text_input("輸入商品型號", placeholder="例如: DD1391-100")
 
 if st.button("🔍 開始即時報價"):
     if model_input:
-        with st.spinner(f'正在為您連線 KREAM 查詢 {model_input} ...'):
-            # 這裡就是剛才報錯的地方，已經補好括號了
+        with st.spinner(f'正在分析市場價格...'):
             results = asyncio.run(get_kream_prices(model_input))
             
             if isinstance(results, list) and len(results) > 0:
-                st.success(f"✅ 查詢成功！以下為 {model_input} 的各尺寸報價：")
+                st.success(f"✅ {model_input} 查詢成功！")
                 st.table(results)
-                st.caption("註：價格為即時抓取 KREAM 最低價計算，隨市場波動調整。")
             elif isinstance(results, list) and len(results) == 0:
-                st.warning("找不到該型號的尺寸價格資訊，請確認型號是否正確。")
+                st.warning("查無此型號。")
             else:
                 st.error(results)
     else:
-        st.warning("⚠️ 請先輸入商品型號！")
-
-st.markdown("---")
-st.caption("專屬代購報價系統 v1.1 | 修正語法錯誤")
+        st.warning("請輸入型號！")
